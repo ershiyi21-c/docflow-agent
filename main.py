@@ -23,6 +23,7 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".txt", ".md"}
+MIN_SEMANTIC_SCORE = 0.55
 
 def split_text(text: str, chunk_size: int = 200) -> list[str]:
     text = text.strip()
@@ -329,9 +330,19 @@ def ask_knowledge_base(
 
     top_results = scored_results[:3]
 
-    if not top_results:
+    if (
+        not top_results
+        or top_results[0][0] < MIN_SEMANTIC_SCORE
+    ):
+        best_score = (
+            round(top_results[0][0], 4)
+            if top_results
+            else None
+        )
+
         return {
-            "answer": "知识库中没有找到相关资料。",
+            "answer": "知识库中没有足够相关的资料。",
+            "best_score": best_score,
             "sources": [],
         }
 
