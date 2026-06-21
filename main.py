@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine
-from models import Document, Ticket
+from models import Document, DocumentChunk, Ticket
 
 from typing import Literal
 from pathlib import Path
@@ -21,6 +21,14 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".txt", ".md"}
+
+def split_text(text: str, chunk_size: int = 200) -> list[str]:
+    text = text.strip()
+
+    return [
+        text[index:index + chunk_size]
+        for index in range(0, len(text), chunk_size)
+    ]
 
 class TicketCreate(BaseModel):
     title: str
@@ -130,6 +138,14 @@ async def upload_document(
     content = await file.read()
     file_path.write_bytes(content)
 
+    try:
+       text_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+       raise HTTPException(
+        status_code=400,
+        detail="文件编码必须是 UTF-8",
+    )
+
     document = Document(
         original_filename=file.filename,
         saved_filename=saved_filename,
@@ -139,7 +155,17 @@ async def upload_document(
     db.add(document)
     db.commit()
     db.refresh(document)
+    chunks = split_text(text_content)
 
+    for index, chunk_content in enumerate(chunks):
+        chunk = DocumentChunk(
+           document_id=document.id,
+           chunk_index=index,
+           content=chunk_content,
+    )
+        db.add(chunk)
+
+    db.commit()
     return {
         "message": "文档上传成功",
         "document": document,
@@ -151,4 +177,30 @@ def list_documents(db: Session = Depends(get_db)):
     return {
         "total": len(documents),
         "items": documents,
+    }
+
+@app.get("/documents/{document_id}/chunks")
+def list_document_chunks(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    document = db.get(Document, document_id)
+
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail="文档不存在",
+        )
+
+    chunks = (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.document_id == document_id)
+        .order_by(DocumentChunk.chunk_index)
+        .all()
+    )
+
+    return {
+        "document_id": document_id,
+        "total": len(chunks),
+        "items": chunks,
     }
