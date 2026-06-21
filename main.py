@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from database import Base, SessionLocal, engine
 from models import Ticket
 
+from typing import Literal
 
 Base.metadata.create_all(bind=engine)
 
@@ -21,7 +22,7 @@ class TicketCreate(BaseModel):
     priority: str = "normal"
 
 class TicketStatusUpdate(BaseModel):
-    status: str
+    status: Literal["open", "processing", "closed"]
 
 def get_db():
     db = SessionLocal()
