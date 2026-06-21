@@ -1,0 +1,19 @@
+# Python 虚拟环境
+.venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 环境变量和密钥
+.env
+
+# 本地数据库和上传文件
+*.db
+uploads/
+
+# 后续知识库数据
+chroma_data/
+
+# VS Code 本地设置
+.vscode/
