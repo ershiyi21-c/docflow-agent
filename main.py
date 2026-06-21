@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine
-from models import Ticket
+from models import Document, Ticket
 
 from typing import Literal
 from pathlib import Path
@@ -106,7 +106,10 @@ def update_ticket_status(
         "ticket": ticket,
     }
 @app.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
     if not file.filename:
         raise HTTPException(
             status_code=400,
@@ -127,9 +130,25 @@ async def upload_document(file: UploadFile = File(...)):
     content = await file.read()
     file_path.write_bytes(content)
 
+    document = Document(
+        original_filename=file.filename,
+        saved_filename=saved_filename,
+        file_size=len(content),
+    )
+
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+
     return {
         "message": "文档上传成功",
-        "original_filename": file.filename,
-        "saved_filename": saved_filename,
-        "size": len(content),
+        "document": document,
+    }
+@app.get("/documents")
+def list_documents(db: Session = Depends(get_db)):
+    documents = db.query(Document).order_by(Document.id.desc()).all()
+
+    return {
+        "total": len(documents),
+        "items": documents,
     }
