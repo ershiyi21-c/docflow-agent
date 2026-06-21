@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -60,3 +60,15 @@ def list_tickets(db: Session = Depends(get_db)):
         "total": len(ticket_items),
         "items": ticket_items,
     }
+
+@app.get("/tickets/{ticket_id}")
+def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
+    ticket = db.get(Ticket, ticket_id)
+
+    if ticket is None:
+        raise HTTPException(
+            status_code=404,
+            detail="工单不存在",
+        )
+
+    return ticket
