@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine
 from models import Document, DocumentChunk, Ticket
-
+from llm import generate_knowledge_answer
 from typing import Literal
 from pathlib import Path
 from uuid import uuid4
@@ -37,6 +37,10 @@ class TicketCreate(BaseModel):
 
 class TicketStatusUpdate(BaseModel):
     status: Literal["open", "processing", "closed"]
+
+class KnowledgeAsk(BaseModel):
+    question: str
+    keyword: str
 
 def get_db():
     db = SessionLocal()
@@ -218,8 +222,12 @@ def search_document_chunks(
             detail="查询关键词不能为空",
         )
 
-    chunks = (
-        db.query(DocumentChunk)
+    results = (
+        db.query(DocumentChunk, Document.original_filename)
+        .join(
+            Document,
+            DocumentChunk.document_id == Document.id,
+        )
         .filter(DocumentChunk.content.contains(keyword))
         .order_by(
             DocumentChunk.document_id,
@@ -228,8 +236,86 @@ def search_document_chunks(
         .all()
     )
 
+    items = [
+        {
+            "document_id": chunk.document_id,
+            "document_name": original_filename,
+            "chunk_index": chunk.chunk_index,
+            "content": chunk.content,
+        }
+        for chunk, original_filename in results
+    ]
+
     return {
         "query": keyword,
-        "total": len(chunks),
-        "items": chunks,
+        "total": len(items),
+        "items": items,
+    }
+
+@app.post("/knowledge/ask")
+def ask_knowledge_base(
+    request: KnowledgeAsk,
+    db: Session = Depends(get_db),
+):
+    question = request.question.strip()
+    keyword = request.keyword.strip()
+
+    if not question:
+        raise HTTPException(
+            status_code=400,
+            detail="问题不能为空",
+        )
+
+    if not keyword:
+        raise HTTPException(
+            status_code=400,
+            detail="检索关键词不能为空",
+        )
+
+    results = (
+        db.query(DocumentChunk, Document.original_filename)
+        .join(
+            Document,
+            DocumentChunk.document_id == Document.id,
+        )
+        .filter(DocumentChunk.content.contains(keyword))
+        .order_by(
+            DocumentChunk.document_id,
+            DocumentChunk.chunk_index,
+        )
+        .limit(3)
+        .all()
+    )
+
+    if not results:
+        return {
+            "answer": "知识库中没有找到相关资料。",
+            "sources": [],
+        }
+
+    context_parts = []
+    sources = []
+
+    for chunk, original_filename in results:
+        context_parts.append(
+            f"文档：{original_filename}\n"
+            f"内容：{chunk.content}"
+        )
+
+        sources.append(
+            {
+                "document_id": chunk.document_id,
+                "document_name": original_filename,
+                "chunk_index": chunk.chunk_index,
+            }
+        )
+
+    answer = generate_knowledge_answer(
+        question=question,
+        context="\n\n---\n\n".join(context_parts),
+    )
+
+    return {
+        "answer": answer,
+        "sources": sources,
     }
