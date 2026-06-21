@@ -1,8 +1,12 @@
-from uuid import uuid4
-
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from database import Base, SessionLocal, engine
+from models import Ticket
+
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="DocFlow Agent",
@@ -10,15 +14,20 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# 临时保存工单的列表。
-# 程序重启后，这里面的数据会消失。
-tickets = []
-
 
 class TicketCreate(BaseModel):
     title: str
     content: str
     priority: str = "normal"
+
+
+def get_db():
+    db = SessionLocal()
+
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 @app.get("/health")
@@ -30,16 +39,12 @@ def health_check():
 
 
 @app.post("/tickets")
-def create_ticket(ticket: TicketCreate):
-    ticket_data = ticket.model_dump()
+def create_ticket(ticket: TicketCreate, db: Session = Depends(get_db)):
+    new_ticket = Ticket(**ticket.model_dump())
 
-    new_ticket = {
-        "id": str(uuid4()),
-        "status": "open",
-        **ticket_data,
-    }
-
-    tickets.append(new_ticket)
+    db.add(new_ticket)
+    db.commit()
+    db.refresh(new_ticket)
 
     return {
         "message": "工单创建成功",
@@ -48,8 +53,10 @@ def create_ticket(ticket: TicketCreate):
 
 
 @app.get("/tickets")
-def list_tickets():
+def list_tickets(db: Session = Depends(get_db)):
+    ticket_items = db.query(Ticket).order_by(Ticket.id.desc()).all()
+
     return {
-        "total": len(tickets),
-        "items": tickets,
+        "total": len(ticket_items),
+        "items": ticket_items,
     }
