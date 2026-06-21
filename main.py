@@ -204,3 +204,32 @@ def list_document_chunks(
         "total": len(chunks),
         "items": chunks,
     }
+
+@app.get("/documents/search")
+def search_document_chunks(
+    query: str,
+    db: Session = Depends(get_db),
+):
+    keyword = query.strip()
+
+    if not keyword:
+        raise HTTPException(
+            status_code=400,
+            detail="查询关键词不能为空",
+        )
+
+    chunks = (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.content.contains(keyword))
+        .order_by(
+            DocumentChunk.document_id,
+            DocumentChunk.chunk_index,
+        )
+        .all()
+    )
+
+    return {
+        "query": keyword,
+        "total": len(chunks),
+        "items": chunks,
+    }
