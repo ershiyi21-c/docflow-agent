@@ -1,10 +1,12 @@
+import json
+from embedding import embed_text, embed_texts
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine
-from models import Document, DocumentChunk, Ticket
-from llm import generate_knowledge_answer, generate_search_keyword
+from models import Document, DocumentChunk, DocumentChunkEmbedding, Ticket
+from llm import generate_knowledge_answer
 from typing import Literal
 from pathlib import Path
 from uuid import uuid4
@@ -158,21 +160,40 @@ async def upload_document(
     db.add(document)
     db.commit()
     db.refresh(document)
+
     chunks = split_text(text_content)
+
+    chunk_objects = []
 
     for index, chunk_content in enumerate(chunks):
         chunk = DocumentChunk(
-           document_id=document.id,
-           chunk_index=index,
-           content=chunk_content,
-    )
+            document_id=document.id,
+            chunk_index=index,
+            content=chunk_content,
+        )
+        chunk_objects.append(chunk)
         db.add(chunk)
 
     db.commit()
+
+    vectors = embed_texts(
+        [chunk.content for chunk in chunk_objects]
+    )
+
+    for chunk, vector in zip(chunk_objects, vectors):
+        embedding = DocumentChunkEmbedding(
+            chunk_id=chunk.id,
+            vector_json=json.dumps(vector),
+        )
+        db.add(embedding)
+
+    db.commit()
+
     return {
         "message": "文档上传成功",
         "document": document,
     }
+
 @app.get("/documents")
 def list_documents(db: Session = Depends(get_db)):
     documents = db.query(Document).order_by(Document.id.desc()).all()
@@ -262,59 +283,63 @@ def ask_knowledge_base(
         raise HTTPException(
             status_code=400,
             detail="问题不能为空",
-    )
+        )
 
-    keyword = generate_search_keyword(question)
+    # 1. 将用户问题转换为向量
+    query_vector = embed_text(question)
 
-
-    results = (
-        db.query(DocumentChunk, Document.original_filename)
+    # 2. 读取所有已保存向量的文档片段
+    vector_results = (
+        db.query(
+            DocumentChunk,
+            DocumentChunkEmbedding,
+            Document.original_filename,
+        )
+        .join(
+            DocumentChunkEmbedding,
+            DocumentChunkEmbedding.chunk_id == DocumentChunk.id,
+        )
         .join(
             Document,
             DocumentChunk.document_id == Document.id,
         )
-        .filter(DocumentChunk.content.contains(keyword))
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.chunk_index,
-        )
-        .limit(3)
         .all()
     )
 
-    if not results:
-        fallback_keyword = keyword[:2]
+    # 3. 计算问题向量与每个文档片段向量的相似度
+    scored_results = []
 
-    if len(fallback_keyword) >= 2:
-        results = (
-            db.query(DocumentChunk, Document.original_filename)
-            .join(
-                Document,
-                DocumentChunk.document_id == Document.id,
-            )
-            .filter(DocumentChunk.content.contains(fallback_keyword))
-            .order_by(
-                DocumentChunk.document_id,
-                DocumentChunk.chunk_index,
-            )
-            .limit(3)
-            .all()
+    for chunk, embedding, original_filename in vector_results:
+        chunk_vector = json.loads(embedding.vector_json)
+
+        score = sum(
+            a * b
+            for a, b in zip(query_vector, chunk_vector)
         )
 
-        if results:
-            keyword = fallback_keyword
+        scored_results.append(
+            (score, chunk, original_filename)
+        )
 
-    if not results:
+    # 4. 相似度从高到低排序，取前三条
+    scored_results.sort(
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+    top_results = scored_results[:3]
+
+    if not top_results:
         return {
-        "keyword": keyword,
-        "answer": "知识库中没有找到相关资料。",
-        "sources": [],
-    }
+            "answer": "知识库中没有找到相关资料。",
+            "sources": [],
+        }
 
+    # 5. 组装检索到的资料，交给 DeepSeek 回答
     context_parts = []
     sources = []
 
-    for chunk, original_filename in results:
+    for score, chunk, original_filename in top_results:
         context_parts.append(
             f"文档：{original_filename}\n"
             f"内容：{chunk.content}"
@@ -325,6 +350,7 @@ def ask_knowledge_base(
                 "document_id": chunk.document_id,
                 "document_name": original_filename,
                 "chunk_index": chunk.chunk_index,
+                "score": round(score, 4),
             }
         )
 
@@ -332,8 +358,72 @@ def ask_knowledge_base(
         question=question,
         context="\n\n---\n\n".join(context_parts),
     )
+
     return {
-        "keyword": keyword,
         "answer": answer,
         "sources": sources,
-}
+    }
+
+@app.get("/documents/semantic-search")
+def semantic_search_documents(
+    query: str,
+    top_k: int = 3,
+    db: Session = Depends(get_db),
+):
+    question = query.strip()
+
+    if not question:
+        raise HTTPException(
+            status_code=400,
+            detail="查询内容不能为空",
+        )
+
+    query_vector = embed_text(question)
+
+    results = (
+        db.query(
+            DocumentChunk,
+            DocumentChunkEmbedding,
+            Document.original_filename,
+        )
+        .join(
+            DocumentChunkEmbedding,
+            DocumentChunkEmbedding.chunk_id == DocumentChunk.id,
+        )
+        .join(
+            Document,
+            DocumentChunk.document_id == Document.id,
+        )
+        .all()
+    )
+
+    items = []
+
+    for chunk, embedding, original_filename in results:
+        chunk_vector = json.loads(embedding.vector_json)
+
+        score = sum(
+            a * b
+            for a, b in zip(query_vector, chunk_vector)
+        )
+
+        items.append(
+            {
+                "document_id": chunk.document_id,
+                "document_name": original_filename,
+                "chunk_index": chunk.chunk_index,
+                "score": round(score, 4),
+                "content": chunk.content,
+            }
+        )
+
+    items.sort(
+        key=lambda item: item["score"],
+        reverse=True,
+    )
+
+    return {
+        "query": question,
+        "total": len(items[:top_k]),
+        "items": items[:top_k],
+    }

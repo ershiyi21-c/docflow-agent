@@ -45,3 +45,18 @@ class DocumentChunk(Base):
         DateTime,
         default=datetime.now,
     )
+
+class DocumentChunkEmbedding(Base):
+    __tablename__ = "document_chunk_embeddings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    chunk_id: Mapped[int] = mapped_column(
+        ForeignKey("document_chunks.id"),
+        unique=True,
+        index=True,
+    )
+    vector_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+    )
