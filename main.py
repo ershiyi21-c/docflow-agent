@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -6,6 +6,8 @@ from database import Base, SessionLocal, engine
 from models import Ticket
 
 from typing import Literal
+from pathlib import Path
+from uuid import uuid4
 
 Base.metadata.create_all(bind=engine)
 
@@ -15,6 +17,10 @@ app = FastAPI(
     version="0.1.0",
 )
 
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+ALLOWED_EXTENSIONS = {".txt", ".md"}
 
 class TicketCreate(BaseModel):
     title: str
@@ -98,4 +104,32 @@ def update_ticket_status(
     return {
         "message": "工单状态更新成功",
         "ticket": ticket,
+    }
+@app.post("/documents/upload")
+async def upload_document(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="请选择要上传的文件",
+        )
+
+    file_extension = Path(file.filename).suffix.lower()
+
+    if file_extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="当前仅支持 .txt 和 .md 文件",
+        )
+
+    saved_filename = f"{uuid4()}{file_extension}"
+    file_path = UPLOAD_DIR / saved_filename
+
+    content = await file.read()
+    file_path.write_bytes(content)
+
+    return {
+        "message": "文档上传成功",
+        "original_filename": file.filename,
+        "saved_filename": saved_filename,
+        "size": len(content),
     }
