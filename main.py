@@ -20,6 +20,8 @@ class TicketCreate(BaseModel):
     content: str
     priority: str = "normal"
 
+class TicketStatusUpdate(BaseModel):
+    status: str
 
 def get_db():
     db = SessionLocal()
@@ -72,3 +74,27 @@ def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
         )
 
     return ticket
+
+@app.patch("/tickets/{ticket_id}/status")
+def update_ticket_status(
+    ticket_id: int,
+    ticket_data: TicketStatusUpdate,
+    db: Session = Depends(get_db),
+):
+    ticket = db.get(Ticket, ticket_id)
+
+    if ticket is None:
+        raise HTTPException(
+            status_code=404,
+            detail="工单不存在",
+        )
+
+    ticket.status = ticket_data.status
+
+    db.commit()
+    db.refresh(ticket)
+
+    return {
+        "message": "工单状态更新成功",
+        "ticket": ticket,
+    }
