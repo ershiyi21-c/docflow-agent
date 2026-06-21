@@ -41,3 +41,30 @@ def generate_knowledge_answer(question: str, context: str) -> str:
     )
 
     return response.choices[0].message.content or "模型没有返回内容。"
+
+def generate_search_keyword(question: str) -> str:
+    response = client.chat.completions.create(
+        model="deepseek-v4-flash",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你负责为企业知识库提取检索关键词。"
+                    "只返回一个最关键的中文词或短语，最多 6 个字。"
+                    "不要解释，不要标点，不要引号。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"问题：{question}",
+            },
+        ],
+    )
+
+    keyword = (response.choices[0].message.content or "").strip()
+    keyword = keyword.strip("。！？,.，；;：:\"'“”")
+
+    if not keyword:
+        raise RuntimeError("模型没有返回检索关键词。")
+
+    return keyword

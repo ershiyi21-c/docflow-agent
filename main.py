@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine
 from models import Document, DocumentChunk, Ticket
-from llm import generate_knowledge_answer
+from llm import generate_knowledge_answer, generate_search_keyword
 from typing import Literal
 from pathlib import Path
 from uuid import uuid4
@@ -40,7 +40,6 @@ class TicketStatusUpdate(BaseModel):
 
 class KnowledgeAsk(BaseModel):
     question: str
-    keyword: str
 
 def get_db():
     db = SessionLocal()
@@ -258,19 +257,15 @@ def ask_knowledge_base(
     db: Session = Depends(get_db),
 ):
     question = request.question.strip()
-    keyword = request.keyword.strip()
 
     if not question:
         raise HTTPException(
             status_code=400,
             detail="问题不能为空",
-        )
+    )
 
-    if not keyword:
-        raise HTTPException(
-            status_code=400,
-            detail="检索关键词不能为空",
-        )
+    keyword = generate_search_keyword(question)
+
 
     results = (
         db.query(DocumentChunk, Document.original_filename)
@@ -288,10 +283,33 @@ def ask_knowledge_base(
     )
 
     if not results:
+        fallback_keyword = keyword[:2]
+
+    if len(fallback_keyword) >= 2:
+        results = (
+            db.query(DocumentChunk, Document.original_filename)
+            .join(
+                Document,
+                DocumentChunk.document_id == Document.id,
+            )
+            .filter(DocumentChunk.content.contains(fallback_keyword))
+            .order_by(
+                DocumentChunk.document_id,
+                DocumentChunk.chunk_index,
+            )
+            .limit(3)
+            .all()
+        )
+
+        if results:
+            keyword = fallback_keyword
+
+    if not results:
         return {
-            "answer": "知识库中没有找到相关资料。",
-            "sources": [],
-        }
+        "keyword": keyword,
+        "answer": "知识库中没有找到相关资料。",
+        "sources": [],
+    }
 
     context_parts = []
     sources = []
@@ -314,8 +332,8 @@ def ask_knowledge_base(
         question=question,
         context="\n\n---\n\n".join(context_parts),
     )
-
     return {
+        "keyword": keyword,
         "answer": answer,
         "sources": sources,
-    }
+}
