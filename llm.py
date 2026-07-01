@@ -1,13 +1,16 @@
+# 本模块负责配置 DeepSeek 的 OpenAI 兼容客户端，并封装模型调用。
 import os
-
+import json
 from dotenv import load_dotenv
 from openai import OpenAI
 
 
+# 将 .env 中的环境变量加载到当前进程。
 load_dotenv()
 
 api_key = os.getenv("DEEPSEEK_API_KEY")
 
+# 在应用启动阶段尽早暴露密钥配置问题。
 if not api_key:
     raise RuntimeError("没有读取到 DEEPSEEK_API_KEY，请检查 .env 文件。")
 
@@ -17,6 +20,7 @@ client = OpenAI(
 )
 
 
+# 根据检索到的知识库上下文生成回答，并约束模型不得脱离资料作答。
 def generate_knowledge_answer(question: str, context: str) -> str:
     response = client.chat.completions.create(
         model="deepseek-v4-flash",
@@ -40,8 +44,10 @@ def generate_knowledge_answer(question: str, context: str) -> str:
         ],
     )
 
+    # 兼容模型响应内容为空的情况，保证调用方始终获得字符串。
     return response.choices[0].message.content or "模型没有返回内容。"
 
+# 将自然语言问题压缩为适合字面检索的单个中文关键词。
 def generate_search_keyword(question: str) -> str:
     response = client.chat.completions.create(
         model="deepseek-v4-flash",
@@ -61,6 +67,7 @@ def generate_search_keyword(question: str) -> str:
         ],
     )
 
+    # 清理模型可能附带的首尾空白和常见标点。
     keyword = (response.choices[0].message.content or "").strip()
     keyword = keyword.strip("。！？,.，；;：:\"'“”")
 
@@ -68,3 +75,47 @@ def generate_search_keyword(question: str) -> str:
         raise RuntimeError("模型没有返回检索关键词。")
 
     return keyword
+
+def classify_agent_intent(message: str) -> dict:
+    response = client.chat.completions.create(
+        model="deepseek-v4-flash",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你是企业知识库与工单协同 Agent 的意图分类器。"
+                    "请判断用户消息属于 knowledge、ticket_list 或 unknown。"
+                    "knowledge 表示制度、流程、文档知识相关问题。"
+                    "ticket_list 表示查看、查询、列出工单。"
+                    "unknown 表示无法判断或不属于上述类型。"
+                    "只返回 JSON，不要解释。"
+                    '格式必须是：{"intent":"knowledge"}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": message,
+            },
+        ],
+        response_format={
+            "type": "json_object",
+        },
+    )
+
+    content = response.choices[0].message.content or "{}"
+
+    try:
+        result = json.loads(content)
+    except json.JSONDecodeError:
+        return {
+            "intent": "unknown",
+        }
+
+    intent = result.get("intent")
+
+    if intent not in {"knowledge", "ticket_list", "unknown"}:
+        intent = "unknown"
+
+    return {
+        "intent": intent,
+    }
