@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine
 from models import Document, DocumentChunk, DocumentChunkEmbedding, Ticket
-from llm import classify_agent_intent, generate_knowledge_answer
+from llm import (
+    classify_agent_intent,
+    generate_knowledge_answer,
+    generate_ticket_draft,
+)
 from typing import Literal
 from pathlib import Path
 from uuid import uuid4
@@ -52,6 +56,13 @@ class KnowledgeAsk(BaseModel):
 
 class AgentChatRequest(BaseModel):
     message: str
+
+class TicketConfirmRequest(BaseModel):
+    title: str
+    content: str
+    priority: Literal["high", "normal", "low"] = "normal"
+
+    
 # FastAPI 数据库依赖：每次请求创建会话，请求结束后确保关闭。
 def get_db():
     db = SessionLocal()
@@ -507,8 +518,51 @@ def agent_chat(
                 "items": tickets,
             },
         }
+    if intent == "ticket_create":
+        draft = generate_ticket_draft(message)
 
+        return {
+            "intent": "ticket_create",
+            "requires_confirmation": True,
+            "message": "已生成工单草稿，请确认后再创建。",
+            "draft": draft,
+        }
     return {
         "intent": "unknown",
         "message": "暂时无法判断你的需求。你可以询问知识库内容，或让我查看工单。",
+    }
+
+@app.post("/agent/tickets/confirm")
+def confirm_ticket_creation(
+    request: TicketConfirmRequest,
+    db: Session = Depends(get_db),
+):
+    title = request.title.strip()
+    content = request.content.strip()
+
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail="工单标题不能为空",
+        )
+
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="工单内容不能为空",
+        )
+
+    ticket = Ticket(
+        title=title,
+        content=content,
+        priority=request.priority,
+    )
+
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+
+    return {
+        "message": "工单已确认创建",
+        "ticket": ticket,
     }

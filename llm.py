@@ -84,9 +84,10 @@ def classify_agent_intent(message: str) -> dict:
                 "role": "system",
                 "content": (
                     "你是企业知识库与工单协同 Agent 的意图分类器。"
-                    "请判断用户消息属于 knowledge、ticket_list 或 unknown。"
+                    "请判断用户消息属于 knowledge、ticket_list、ticket_create 或 unknown。"
                     "knowledge 表示制度、流程、文档知识相关问题。"
                     "ticket_list 表示查看、查询、列出工单。"
+                    "ticket_create 表示用户希望创建、提交、登记或反馈一个工单问题。"
                     "unknown 表示无法判断或不属于上述类型。"
                     "只返回 JSON，不要解释。"
                     '格式必须是：{"intent":"knowledge"}'
@@ -102,6 +103,7 @@ def classify_agent_intent(message: str) -> dict:
         },
     )
 
+
     content = response.choices[0].message.content or "{}"
 
     try:
@@ -113,9 +115,65 @@ def classify_agent_intent(message: str) -> dict:
 
     intent = result.get("intent")
 
-    if intent not in {"knowledge", "ticket_list", "unknown"}:
+    if intent not in {
+        "knowledge",
+        "ticket_list",
+        "ticket_create",
+        "unknown",
+    }:
         intent = "unknown"
 
     return {
         "intent": intent,
+    }
+
+def generate_ticket_draft(message: str) -> dict:
+    response = client.chat.completions.create(
+        model="deepseek-v4-flash",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你负责从用户消息中提取工单草稿。"
+                    "只返回 JSON，不要解释。"
+                    '格式必须是：{"title":"工单标题","content":"问题详情","priority":"normal"}'
+                    "priority 只能是 high、normal、low。"
+                    "用户明确说高优先级、紧急、严重时使用 high。"
+                    "没有明确优先级时使用 normal。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": message,
+            },
+        ],
+        response_format={
+            "type": "json_object",
+        },
+    )
+
+    content = response.choices[0].message.content or "{}"
+
+    try:
+        draft = json.loads(content)
+    except json.JSONDecodeError:
+        draft = {}
+
+    title = str(draft.get("title", "")).strip()
+    ticket_content = str(draft.get("content", "")).strip()
+    priority = str(draft.get("priority", "normal")).strip().lower()
+
+    if not title:
+        title = "待确认工单"
+
+    if not ticket_content:
+        ticket_content = message.strip()
+
+    if priority not in {"high", "normal", "low"}:
+        priority = "normal"
+
+    return {
+        "title": title,
+        "content": ticket_content,
+        "priority": priority,
     }
